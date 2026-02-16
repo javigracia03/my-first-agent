@@ -1,6 +1,6 @@
-langchain==0.2.16
-langchain-community==0.2.16
-langchain-core==0.2.38
-langchain-google-genai==1.0.10
-streamlit==1.33.0
+langchain==1.2.10
+langchain-community==0.4.1
+langchain-core==1.2.11
+langchain-google-genai==4.2.0
+streamlit==1.54.0
 wikipedia==1.4.0

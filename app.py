@@ -1,12 +1,21 @@
 import re
-from typing import Optional
+from typing import Any, Optional
 
 import streamlit as st
-from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_community.utilities import WikipediaAPIWrapper
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
+
+try:
+    # LangChain <=0.2 style API.
+    from langchain.agents import AgentExecutor, create_tool_calling_agent
+    USE_LEGACY_AGENT_API = True
+except ImportError:
+    # LangChain >=1.x style API.
+    from langchain.agents import create_agent
+    AgentExecutor = Any  # type: ignore[assignment]
+    USE_LEGACY_AGENT_API = False
 
 
 wiki = WikipediaAPIWrapper(top_k_results=1, doc_content_chars_max=1200)
@@ -93,25 +102,28 @@ def build_agent(api_key: str) -> AgentExecutor:
 
     tools = [wiki_summary, wiki_image, wiki_compare]
 
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            (
-                "system",
-                "You are a Wikipedia multi-tool assistant. "
-                "Always choose exactly one tool per user request. "
-                "Rules: "
-                "1) If query includes comparison intent (like 'compare X and Y' or 'X vs Y'), call wiki_compare. "
-                "2) If query asks for photo/image/picture, call wiki_image. "
-                "3) Otherwise call wiki_summary. "
-                "Return concise markdown.",
-            ),
-            ("human", "{input}"),
-            ("placeholder", "{agent_scratchpad}"),
-        ]
+    system_prompt = (
+        "You are a Wikipedia multi-tool assistant. "
+        "Always choose exactly one tool per user request. "
+        "Rules: "
+        "1) If query includes comparison intent (like 'compare X and Y' or 'X vs Y'), call wiki_compare. "
+        "2) If query asks for photo/image/picture, call wiki_image. "
+        "3) Otherwise call wiki_summary. "
+        "Return concise markdown."
     )
 
-    agent = create_tool_calling_agent(model, tools, prompt)
-    return AgentExecutor(agent=agent, tools=tools, verbose=False)
+    if USE_LEGACY_AGENT_API:
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", system_prompt),
+                ("human", "{input}"),
+                ("placeholder", "{agent_scratchpad}"),
+            ]
+        )
+        agent = create_tool_calling_agent(model, tools, prompt)
+        return AgentExecutor(agent=agent, tools=tools, verbose=False)
+
+    return create_agent(model=model, tools=tools, system_prompt=system_prompt)
 
 
 def parse_compare_query(query: str) -> str:
@@ -124,6 +136,44 @@ def parse_compare_query(query: str) -> str:
 def extract_first_url(text: str) -> Optional[str]:
     m = re.search(r"(https?://[^\s)]+)", text)
     return m.group(1) if m else None
+
+
+def _content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(p for p in parts if p).strip()
+    return ""
+
+
+def extract_agent_output(result: Any) -> str:
+    if isinstance(result, dict):
+        output = result.get("output")
+        if isinstance(output, str) and output.strip():
+            return output
+
+        messages = result.get("messages")
+        if isinstance(messages, list) and messages:
+            last = messages[-1]
+            content = getattr(last, "content", None)
+            if content is None and isinstance(last, dict):
+                content = last.get("content")
+            text = _content_to_text(content)
+            if text:
+                return text
+
+    if isinstance(result, str) and result.strip():
+        return result
+
+    return "No answer produced."
 
 
 def main() -> None:
@@ -153,8 +203,13 @@ def main() -> None:
         executor = build_agent(api_key)
 
         normalized_query = parse_compare_query(user_query)
-        result = executor.invoke({"input": normalized_query})
-        final_answer = result.get("output", "No answer produced.")
+        if USE_LEGACY_AGENT_API:
+            result = executor.invoke({"input": normalized_query})
+        else:
+            result = executor.invoke(
+                {"messages": [{"role": "user", "content": normalized_query}]}
+            )
+        final_answer = extract_agent_output(result)
 
         st.markdown(final_answer)
 
