@@ -1,6 +1,6 @@
-streamlit>=1.32.0
-langchain>=0.2.14
-langchain-classic>=0.2.0
-langchain-community>=0.2.12
-langchain-google-genai>=1.0.10
-wikipedia>=1.4.0
+streamlit
+langchain
+langchain-classic
+langchain-community
+langchain-google-genai
+wikipedia
