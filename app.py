@@ -2,21 +2,11 @@ import re
 from typing import Optional
 
 import streamlit as st
+from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_community.utilities import WikipediaAPIWrapper
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
-
-try:
-    # Prefer langchain_classic as requested.
-    from langchain_classic.agents import AgentExecutor, create_tool_calling_agent
-except ImportError:
-    # Backward-compatible fallback if langchain_classic isn't installed yet.
-    from langchain.agents import AgentExecutor
-    try:
-        from langchain.agents import create_tool_calling_agent
-    except ImportError:
-        from langchain.agents.tool_calling_agent.base import create_tool_calling_agent
 
 
 wiki = WikipediaAPIWrapper(top_k_results=1, doc_content_chars_max=1200)
