@@ -147,7 +147,6 @@ def main() -> None:
     st.markdown(
         "- Tell me about Albert Einstein\n"
         "- Show me a picture of the Eiffel Tower\n"
-        "- Compare Python and JavaScript\n"
         "- Lionel Messi vs Cristiano Ronaldo"
     )
 
