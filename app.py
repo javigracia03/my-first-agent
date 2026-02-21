@@ -10,31 +10,56 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 
 # Wikipedia wrapper uses the `wikipedia` python package under the hood. :contentReference[oaicite:2]{index=2}
 wiki = WikipediaAPIWrapper(top_k_results=1, doc_content_chars_max=1200)
+SUMMARY_MAX_CHARS = 1400
 
 
 def clean(text: str) -> str:
     return text.strip().strip('"').strip("'")
 
 
-def normalize_compare(query: str) -> str:
-    q = query.strip()
-
-    # "X vs Y"
-    m = re.search(r"(?i)^\s*(.+?)\s+vs\.?\s+(.+?)\s*$", q)
-    if m:
-        return f"Compare {clean(m.group(1))} and {clean(m.group(2))}"
-
-    # "compare X and Y"
-    m = re.search(r"(?i)^\s*compare\s+(.+?)\s+and\s+(.+?)\s*$", q)
-    if m:
-        return f"Compare {clean(m.group(1))} and {clean(m.group(2))}"
-
-    return q
-
-
 def first_url(text: str) -> Optional[str]:
     m = re.search(r"(https?://[^\s)]+)", text)
     return m.group(1) if m else None
+
+
+def _strip_wrapper_labels(text: str) -> str:
+    text = text.strip()
+    summary_match = re.search(r"(?is)\bsummary:\s*(.+)$", text)
+    if summary_match:
+        return summary_match.group(1).strip()
+    return text
+
+
+def _trim_to_sentence(text: str, max_chars: int = SUMMARY_MAX_CHARS) -> str:
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) <= max_chars:
+        return text
+
+    cut = text[:max_chars].rstrip()
+    boundary = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
+    if boundary > 120:
+        return cut[: boundary + 1].strip()
+    return cut + "..."
+
+
+def get_topic_summary(topic: str) -> str:
+    topic = clean(topic)
+    if not topic:
+        return ""
+
+    # Prefer the page summary directly to avoid wrapper formatting like "Page:"/"Summary:".
+    try:
+        page = wiki.wiki_client.page(topic)
+        direct = getattr(page, "summary", "") or ""
+        direct = direct.strip()
+        if direct:
+            return _trim_to_sentence(direct)
+    except Exception:
+        pass
+
+    raw = wiki.run(topic)
+    cleaned = _strip_wrapper_labels(raw)
+    return _trim_to_sentence(cleaned)
 
 
 @tool
@@ -44,7 +69,9 @@ def wiki_summary(topic: str) -> str:
     if not topic:
         return "Please provide a valid topic."
     try:
-        return wiki.run(topic)
+        print(f"Fetching summary for topic: '{topic}'")
+        summary = get_topic_summary(topic)
+        return summary or f"Could not find a summary for '{topic}'."
     except Exception as e:
         return f"Could not fetch summary for '{topic}': {e}"
 
@@ -77,13 +104,17 @@ def wiki_compare(a: str, b: str) -> str:
     if not a or not b:
         return "Please provide two valid topics to compare."
 
-    sa = wiki.run(a)
-    sb = wiki.run(b)
+    sa = get_topic_summary(a)
+    sb = get_topic_summary(b)
 
     return (
         f"## {a} vs {b}\n\n"
-        f"### {a}\n{sa}\n\n"
-        f"### {b}\n{sb}\n"
+        "Use the two summaries below to produce a brief comparison with:\n"
+        "1. Similarities\n"
+        "2. Key differences\n"
+        "3. When to choose one over the other (if applicable)\n\n"
+        f"### {a} summary\n{sa}\n\n"
+        f"### {b} summary\n{sb}\n"
     )
 
 
@@ -122,6 +153,9 @@ def build_executor(api_key: str):
         "1) If user intent is comparison (e.g., 'compare X and Y' or 'X vs Y') -> call wiki_compare.\n"
         "2) If user asks for an image/photo/picture -> call wiki_image.\n"
         "3) Otherwise -> call wiki_summary.\n"
+        "Always return complete sentences.\n"
+        "Never output raw labels like 'Page:' or 'Summary:'.\n"
+        "If comparison was requested, provide an actual comparison, not just two pasted summaries.\n"
         "Return concise markdown."
     )
 
@@ -141,7 +175,7 @@ def main() -> None:
         "- Tell me about Ada Lovelace\n"
         "- Show me a picture of the Eiffel Tower\n"
         "- Compare Python and JavaScript\n"
-        "- Messi vs Ronaldo"
+        "- Lionel Messi vs Cristiano Ronaldo"
     )
 
     with st.sidebar:
@@ -158,10 +192,8 @@ def main() -> None:
             return
 
         executor = build_executor(api_key)
-        normalized = normalize_compare(user_query)
-
         result = executor.invoke(
-            {"messages": [{"role": "user", "content": normalized}]}
+            {"messages": [{"role": "user", "content": user_query}]}
         )
         answer = extract_text(result)
 
