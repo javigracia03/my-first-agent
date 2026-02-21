@@ -2,13 +2,13 @@ import re
 from typing import Optional
 
 import streamlit as st
-from langchain.agents import create_agent
 from langchain_community.utilities import WikipediaAPIWrapper
+from langchain.agents import create_agent
+from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 
-# Wikipedia wrapper uses the `wikipedia` python package under the hood. :contentReference[oaicite:2]{index=2}
 wiki = WikipediaAPIWrapper(top_k_results=1, doc_content_chars_max=1200)
 SUMMARY_MAX_CHARS = 1400
 
@@ -47,7 +47,6 @@ def get_topic_summary(topic: str) -> str:
     if not topic:
         return ""
 
-    # Prefer the page summary directly to avoid wrapper formatting like "Page:"/"Summary:".
     try:
         page = wiki.wiki_client.page(topic)
         direct = getattr(page, "summary", "") or ""
@@ -69,7 +68,6 @@ def wiki_summary(topic: str) -> str:
     if not topic:
         return "Please provide a valid topic."
     try:
-        print(f"Fetching summary for topic: '{topic}'")
         summary = get_topic_summary(topic)
         return summary or f"Could not find a summary for '{topic}'."
     except Exception as e:
@@ -118,53 +116,28 @@ def wiki_compare(a: str, b: str) -> str:
     )
 
 
-def extract_text(result: dict) -> str:
-    messages = result.get("messages", [])
-    if not messages:
-        return "No answer produced."
-
-    last = messages[-1]
-    content = getattr(last, "content", "")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, dict) and item.get("type") == "text":
-                parts.append(item.get("text", ""))
-        joined = "".join(parts).strip()
-        return joined or "No answer produced."
-    return str(content) if content else "No answer produced."
+SYSTEM_PROMPT = (
+    "You are a Wikipedia multi-tool assistant.\n"
+    "You MUST choose exactly one tool per user request.\n"
+    "Rules:\n"
+    "1) If user intent is comparison (e.g., 'compare X and Y' or 'X vs Y') -> call wiki_compare.\n"
+    "2) If user asks for an image/photo/picture -> call wiki_image.\n"
+    "3) Otherwise -> call wiki_summary.\n"
+    "Always return complete sentences.\n"
+    "Never output raw labels like 'Page:' or 'Summary:'.\n"
+    "If comparison was requested, provide an actual comparison, not just two pasted summaries.\n"
+    "Return concise markdown."
+)
 
 
-def build_executor(api_key: str):
+def build_agent(api_key: str):
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.5-flash",
-        api_key=api_key,   # langchain-google-genai supports api_key + env var. :contentReference[oaicite:3]{index=3}
-        temperature=0,
+        api_key=api_key,
+        temperature=0.4,
     )
-
     tools = [wiki_summary, wiki_image, wiki_compare]
-
-    system = (
-        "You are a Wikipedia multi-tool assistant.\n"
-        "You MUST choose exactly one tool per user request.\n"
-        "Rules:\n"
-        "1) If user intent is comparison (e.g., 'compare X and Y' or 'X vs Y') -> call wiki_compare.\n"
-        "2) If user asks for an image/photo/picture -> call wiki_image.\n"
-        "3) Otherwise -> call wiki_summary.\n"
-        "Always return complete sentences.\n"
-        "Never output raw labels like 'Page:' or 'Summary:'.\n"
-        "If comparison was requested, provide an actual comparison, not just two pasted summaries.\n"
-        "Return concise markdown."
-    )
-
-    return create_agent(
-        model=llm,
-        tools=tools,
-        system_prompt=system,
-        debug=False,
-    )
+    return create_agent(llm, tools, system_prompt=SYSTEM_PROMPT)
 
 
 def main() -> None:
@@ -172,7 +145,7 @@ def main() -> None:
     st.title("Wikipedia Multi-Tool Agent")
 
     st.markdown(
-        "- Tell me about Ada Lovelace\n"
+        "- Tell me about Albert Einstein\n"
         "- Show me a picture of the Eiffel Tower\n"
         "- Compare Python and JavaScript\n"
         "- Lionel Messi vs Cristiano Ronaldo"
@@ -191,11 +164,13 @@ def main() -> None:
             st.error("Please enter a query.")
             return
 
-        executor = build_executor(api_key)
-        result = executor.invoke(
-            {"messages": [{"role": "user", "content": user_query}]}
-        )
-        answer = extract_text(result)
+        agent = build_agent(api_key)
+        result = agent.invoke({"messages": [HumanMessage(content=user_query)]})
+        raw = result["messages"][-1].content
+        if isinstance(raw, list):
+            answer = " ".join(p.get("text", "") for p in raw if isinstance(p, dict))
+        else:
+            answer = str(raw)
 
         st.markdown(answer)
 
